@@ -1,0 +1,11 @@
+[[ports]]
+localPort = 3000
+externalPort = 3001
+
+[[ports]]
+localPort = 8080
+externalPort = 80
+
+[[ports]]
+localPort = 23236
+externalPort = 3000
