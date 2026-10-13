@@ -26,21 +26,48 @@ export default function Home() {
 
   useEffect(() => {
     let isCancelled = false;
-    const fetchPing = async () => {
+    const fetchStatusAndPing = async () => {
       const t0 = performance.now();
       try {
-        const res = await fetch('/api/server-ping');
-        if (res.ok && !isCancelled) {
+        const pingRes = await fetch('/api/server-ping');
+        if (pingRes.ok && !isCancelled) {
           const ping = Math.max(8, Math.round(performance.now() - t0));
           setRealLatency(ping);
+        }
+
+        const waRes = await fetch('/api/wa/status');
+        if (waRes.ok && !isCancelled) {
+          const waData = await waRes.json();
+          if (waData.connectionState === 'connected') {
+            setBot((prev) => ({
+              ...prev,
+              connectionState: 'connected',
+              phoneNumber: waData.phoneNumber || prev.phoneNumber,
+              ownerNumber: waData.ownerNumber || prev.ownerNumber,
+              waVersion: waData.waVersion || prev.waVersion,
+              deviceName: waData.deviceName || prev.deviceName,
+              lastConnectedAt: waData.lastConnectedAt || prev.lastConnectedAt,
+            }));
+          } else if (waData.connectionState === 'disconnected') {
+            setBot((prev) => {
+              if (prev.connectionState === 'connected') {
+                return { ...prev, connectionState: 'disconnected' };
+              }
+              return prev;
+            });
+          }
+
+          if (Array.isArray(waData.activityLogs) && waData.activityLogs.length > 0) {
+            setActivityLogs(waData.activityLogs);
+          }
         }
       } catch {
         // fallback
       }
     };
 
-    const initialTimer = setTimeout(fetchPing, 100);
-    const interval = setInterval(fetchPing, 10000);
+    const initialTimer = setTimeout(fetchStatusAndPing, 100);
+    const interval = setInterval(fetchStatusAndPing, 3500);
     return () => {
       isCancelled = true;
       clearTimeout(initialTimer);

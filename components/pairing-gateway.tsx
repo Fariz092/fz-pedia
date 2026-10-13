@@ -9,8 +9,11 @@ import {
   Copy,
   Check,
   RefreshCw,
-  ArrowRight,
   AlertCircle,
+  ShieldCheck,
+  Smartphone,
+  CheckCircle2,
+  ExternalLink,
 } from 'lucide-react';
 import { BotInstance, PairingMethod } from '../types/bot';
 
@@ -26,7 +29,6 @@ export function PairingGateway({
   bot,
   onUpdateBot,
   onNavigateToDashboard,
-  onNavigateToManagement,
   realLatency,
 }: PairingGatewayProps) {
   const [phoneNumberInput, setPhoneNumberInput] = useState(
@@ -34,41 +36,20 @@ export function PairingGateway({
   );
   const [countryCode, setCountryCode] = useState('+62');
   const [selectedMethod, setSelectedMethod] = useState<PairingMethod>(bot.pairingMethod || 'pairing_code');
-  const [pairingCode, setPairingCode] = useState<string>(() => {
-    if (bot.pairingCode) return bot.pairingCode;
-    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-    let part1 = 'FZ';
-    for (let i = 0; i < 2; i++) part1 += chars.charAt(Math.floor(Math.random() * chars.length));
-    let part2 = '';
-    for (let i = 0; i < 4; i++) part2 += chars.charAt(Math.floor(Math.random() * chars.length));
-    return `${part1}-${part2}`;
-  });
+  const [pairingCode, setPairingCode] = useState<string>(bot.pairingCode || '');
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [copied, setCopied] = useState(false);
-  const [codeCountdown, setCodeCountdown] = useState(180);
-  const [qrCountdown, setQrCountdown] = useState(30);
-  const [isPairingProcessing, setIsPairingProcessing] = useState(false);
+  const [isRequestingPairing, setIsRequestingPairing] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [isWaitingForVerification, setIsWaitingForVerification] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [statusFeedback, setStatusFeedback] = useState('');
 
-  const generateNewPairingCode = useCallback(() => {
-    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
-    let part1 = 'FZ';
-    for (let i = 0; i < 2; i++) part1 += chars.charAt(Math.floor(Math.random() * chars.length));
-    let part2 = '';
-    for (let i = 0; i < 4; i++) part2 += chars.charAt(Math.floor(Math.random() * chars.length));
-    const newCode = `${part1}-${part2}`;
-    setPairingCode(newCode);
-    setCodeCountdown(180);
-    return newCode;
-  }, []);
-
-  const generateNewQrCode = useCallback(async (phone: string) => {
-    const cleanNum = phone.replace(/\D/g, '');
-    const fullPhone = cleanNum ? `${countryCode}${cleanNum}` : 'UNCONFIGURED';
-    const randomSeed = Math.random().toString(36).substring(2, 10);
-    const payload = `2@FZPEDIA_AUTH_HANDSHAKE,${fullPhone},${Date.now()},${randomSeed},AES256_E2EE`;
+  // Synchronize QR code generation from raw QR payload
+  const renderQrCode = useCallback(async (rawQr: string) => {
+    if (!rawQr) return;
     try {
-      const url = await QRCode.toDataURL(payload, {
+      const url = await QRCode.toDataURL(rawQr, {
         width: 240,
         margin: 2,
         color: {
@@ -77,141 +58,181 @@ export function PairingGateway({
         },
       });
       setQrDataUrl(url);
-      setQrCountdown(30);
     } catch (err) {
-      console.error('Failed to generate QR', err);
+      console.error('Failed to render QR', err);
     }
-  }, [countryCode]);
+  }, []);
 
-  useEffect(() => {
-    let isCancelled = false;
-    const timer = setTimeout(async () => {
-      const cleanNum = phoneNumberInput.replace(/\D/g, '');
-      const fullPhone = cleanNum ? `${countryCode}${cleanNum}` : 'UNCONFIGURED';
-      const randomSeed = Math.random().toString(36).substring(2, 10);
-      const payload = `2@FZPEDIA_AUTH_HANDSHAKE,${fullPhone},${Date.now()},${randomSeed},AES256_E2EE`;
-      try {
-        const url = await QRCode.toDataURL(payload, {
-          width: 240,
-          margin: 2,
-          color: {
-            dark: '#07070a',
-            light: '#ffffff',
-          },
+  // Poll status from Baileys backend
+  const checkStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/wa/status');
+      if (!res.ok) return;
+      const data = await res.json();
+
+      if (data.connectionState === 'connected') {
+        onUpdateBot({
+          connectionState: 'connected',
+          phoneNumber: data.phoneNumber,
+          ownerNumber: data.ownerNumber,
+          deviceName: data.deviceName,
+          waVersion: data.waVersion,
+          lastConnectedAt: data.lastConnectedAt || new Date().toLocaleTimeString('id-ID'),
+          pingMs: realLatency || 12,
         });
-        if (!isCancelled) {
-          setQrDataUrl(url);
-          setQrCountdown(30);
+        setIsWaitingForVerification(false);
+        setErrorMessage('');
+      } else if (data.connectionState === 'connecting') {
+        if (data.pairingCode && !pairingCode) {
+          setPairingCode(data.pairingCode);
         }
-      } catch (err) {
-        console.error('Failed to generate QR', err);
+        if (data.qrCodeRaw) {
+          renderQrCode(data.qrCodeRaw);
+        }
+      } else if (data.connectionState === 'disconnected') {
+        if (bot.connectionState === 'connected') {
+          onUpdateBot({ connectionState: 'disconnected' });
+        }
       }
-    }, 60);
+    } catch {
+      // ignore network glitch
+    }
+  }, [bot.connectionState, onUpdateBot, pairingCode, realLatency, renderQrCode]);
 
-    return () => {
-      isCancelled = true;
-      clearTimeout(timer);
-    };
-  }, [phoneNumberInput, countryCode]);
-
+  // Periodic polling when waiting for verification
   useEffect(() => {
     if (bot.connectionState === 'connected') return;
 
-    const timer = setInterval(() => {
-      setCodeCountdown((prev) => {
-        if (prev <= 1) {
-          generateNewPairingCode();
-          return 180;
-        }
-        return prev - 1;
-      });
+    const interval = setInterval(() => {
+      if (isWaitingForVerification || selectedMethod === 'qrcode') {
+        checkStatus();
+      }
+    }, 2500);
 
-      setQrCountdown((prev) => {
-        if (prev <= 1) {
-          generateNewQrCode(phoneNumberInput);
-          return 30;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [bot.connectionState, generateNewPairingCode, generateNewQrCode, phoneNumberInput]);
+    return () => clearInterval(interval);
+  }, [bot.connectionState, checkStatus, isWaitingForVerification, selectedMethod]);
 
   const handleCopyCode = () => {
     if (!pairingCode) return;
-    navigator.clipboard.writeText(pairingCode);
+    navigator.clipboard.writeText(pairingCode.replace(/-/g, ''));
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleVerifyConnection = async () => {
+  const handleRequestPairing = async () => {
     const cleanNum = phoneNumberInput.replace(/\D/g, '');
     if (!cleanNum || cleanNum.length < 8) {
       setErrorMessage('Silakan masukkan nomor WhatsApp yang valid (minimal 8 digit).');
       return;
     }
 
+    const cleanCountry = countryCode.replace(/\D/g, '');
+    const fullNumber = `${cleanCountry}${cleanNum}`;
+
     setErrorMessage('');
-    setIsPairingProcessing(true);
-    onUpdateBot({ connectionState: 'connecting' });
+    setStatusFeedback('');
+    setIsRequestingPairing(true);
 
-    let measuredPing = realLatency || 14;
     try {
-      const t0 = performance.now();
-      const res = await fetch('/api/server-ping');
-      if (res.ok) {
-        measuredPing = Math.max(8, Math.round(performance.now() - t0));
-      }
-    } catch {
-      // fallback
-    }
-
-    setTimeout(() => {
-      const fullNumber = `${countryCode} ${cleanNum}`;
-      onUpdateBot({
-        phoneNumber: fullNumber,
-        ownerNumber: fullNumber,
-        pairingMethod: selectedMethod,
-        pairingCode,
-        connectionState: 'connected',
-        lastConnectedAt: new Date().toLocaleTimeString('id-ID'),
-        batteryLevel: 94,
-        isCharging: true,
-        pingMs: measuredPing,
+      const res = await fetch('/api/wa/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: fullNumber,
+          method: selectedMethod,
+        }),
       });
-      setIsPairingProcessing(false);
-    }, 1600);
+
+      const data = await res.json();
+
+      if (data.success) {
+        if (data.pairingCode) {
+          setPairingCode(data.pairingCode);
+        }
+        setIsWaitingForVerification(true);
+        setStatusFeedback('Kode berhasil diminta dari WhatsApp! Masukkan kode ini di HP Anda.');
+        checkStatus();
+      } else {
+        setErrorMessage(data.message || 'Gagal meminta kode pairing dari WhatsApp.');
+      }
+    } catch (err: unknown) {
+      const error = err as Error;
+      setErrorMessage(error?.message || 'Gagal terhubung ke server internal Gateway.');
+    } finally {
+      setIsRequestingPairing(false);
+    }
   };
 
-  const handleDisconnect = () => {
+  const handleManualCheck = async () => {
+    setIsCheckingStatus(true);
+    setStatusFeedback('');
+    setErrorMessage('');
+    try {
+      const res = await fetch('/api/wa/status');
+      const data = await res.json();
+
+      if (data.connectionState === 'connected') {
+        onUpdateBot({
+          connectionState: 'connected',
+          phoneNumber: data.phoneNumber,
+          ownerNumber: data.ownerNumber,
+          deviceName: data.deviceName,
+          waVersion: data.waVersion,
+          lastConnectedAt: data.lastConnectedAt || new Date().toLocaleTimeString('id-ID'),
+          pingMs: realLatency || 12,
+        });
+        setIsWaitingForVerification(false);
+      } else {
+        setStatusFeedback(
+          'Perangkat belum terverifikasi oleh WhatsApp. Pastikan Anda sudah membuka WhatsApp > Perangkat Tertaut dan memasukkan kode.'
+        );
+      }
+    } catch {
+      setErrorMessage('Gagal memeriksa status koneksi.');
+    } finally {
+      setIsCheckingStatus(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    try {
+      await fetch('/api/wa/disconnect', { method: 'POST' });
+    } catch {}
+
     onUpdateBot({
       connectionState: 'disconnected',
       phoneNumber: '',
       ownerNumber: '',
+      pairingCode: '',
     });
     setPhoneNumberInput('');
-    generateNewPairingCode();
+    setPairingCode('');
+    setQrDataUrl('');
+    setIsWaitingForVerification(false);
+    setStatusFeedback('Sesi WhatsApp telah diputus.');
   };
 
   const isConnected = bot.connectionState === 'connected';
 
   return (
     <PageStage
-      badgeTag="PAIRING"
+      badgeTag="GATEWAY REALTIME"
       badgeTagColor="bg-yellow-400 text-black"
-      badgeText="Tautkan Perangkat WhatsApp"
-      title="Pairing WhatsApp Gateway"
-      subtitle="Hubungkan akun WhatsApp Anda dengan aman. Bot akan mengunci nomor Anda sebagai Owner Tunggal."
+      badgeText="Tautan Perangkat WhatsApp Asli (Baileys Engine)"
+      title="Pairing WhatsApp Gateway Realtime"
+      subtitle="Hubungkan akun WhatsApp nomor Anda secara nyata. Server akan meminta kode pairing resmi dari server WhatsApp."
     >
       {isConnected ? (
         <div className="p-6 rounded-2xl bg-zinc-900/80 border border-emerald-500/30 text-left space-y-4 backdrop-blur-xl shadow-xl">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-3 border-b border-white/5">
             <div>
-              <span className="text-[11px] uppercase font-mono tracking-wider text-emerald-400 block font-semibold">
-                Status: Terhubung &amp; Aktif
-              </span>
-              <div className="text-xl sm:text-2xl font-mono font-bold text-white mt-0.5">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-[11px] uppercase font-mono tracking-wider text-emerald-400 font-semibold">
+                  Status: Terhubung &amp; Aktif Realtime
+                </span>
+              </div>
+              <div className="text-xl sm:text-2xl font-mono font-bold text-white mt-1">
                 {bot.phoneNumber}
               </div>
             </div>
@@ -232,19 +253,58 @@ export function PairingGateway({
           </div>
 
           <div className="text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono">
-            <span>Owner: <strong className="text-white">{bot.ownerNumber}</strong></span>
+            <span>Owner: <strong className="text-white">{bot.ownerNumber || bot.phoneNumber}</strong></span>
             <span>·</span>
-            <span>Latensi Riil: <strong className="text-yellow-400">{bot.pingMs}ms</strong></span>
+            <span>Engine: <strong className="text-yellow-400">Baileys WebSocket</strong></span>
             <span>·</span>
-            <span>Mode Privat: <strong className="text-emerald-400">Aktif</strong></span>
+            <span>Mode Privat: <strong className="text-emerald-400">Aktif (Tolak Orang Asing)</strong></span>
           </div>
         </div>
       ) : (
         <div className="p-6 sm:p-7 rounded-2xl bg-zinc-900/80 border border-white/10 space-y-6 backdrop-blur-xl text-left shadow-2xl">
-          {/* Step 1: Input Phone */}
+          {/* Method Segment */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950 rounded-xl border border-white/5">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMethod('pairing_code');
+                  setIsWaitingForVerification(false);
+                  setErrorMessage('');
+                }}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  selectedMethod === 'pairing_code'
+                    ? 'bg-white text-black shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Pairing Code (8 Digit)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedMethod('qrcode');
+                  setIsWaitingForVerification(false);
+                  setErrorMessage('');
+                }}
+                className={`py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                  selectedMethod === 'qrcode'
+                    ? 'bg-white text-black shadow-md'
+                    : 'text-slate-400 hover:text-white'
+                }`}
+              >
+                <QrCode className="w-3.5 h-3.5" />
+                <span>QR Code (Scan)</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Phone Number Input */}
           <div className="space-y-2">
             <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider font-mono">
-              Nomor WhatsApp Anda:
+              Nomor WhatsApp HP Anda (Tanpa Angka 0 di Depan):
             </label>
             <div className="flex items-stretch gap-2">
               <select
@@ -264,6 +324,7 @@ export function PairingGateway({
                 onChange={(e) => {
                   setPhoneNumberInput(e.target.value);
                   setErrorMessage('');
+                  setIsWaitingForVerification(false);
                 }}
                 placeholder="Contoh: 81234567890"
                 className="flex-1 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-white font-mono text-sm placeholder:text-zinc-600 focus:outline-none focus:border-yellow-400"
@@ -271,106 +332,145 @@ export function PairingGateway({
             </div>
 
             {errorMessage && (
-              <p className="text-xs text-red-400 flex items-center gap-1.5 font-sans">
-                <AlertCircle className="w-3.5 h-3.5" />
+              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
                 <span>{errorMessage}</span>
-              </p>
+              </div>
+            )}
+
+            {statusFeedback && (
+              <div className="p-3 rounded-lg bg-yellow-400/10 border border-yellow-400/20 text-xs text-yellow-300 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 shrink-0 text-yellow-400" />
+                <span>{statusFeedback}</span>
+              </div>
             )}
           </div>
 
-          {/* Step 2: Method Segment */}
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950 rounded-xl border border-white/5">
-              <button
-                type="button"
-                onClick={() => setSelectedMethod('pairing_code')}
-                className={`py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                  selectedMethod === 'pairing_code'
-                    ? 'bg-white text-black shadow-md'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <KeyRound className="w-3.5 h-3.5" />
-                <span>Pairing Code (8 Digit)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setSelectedMethod('qrcode')}
-                className={`py-2 px-3 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-                  selectedMethod === 'qrcode'
-                    ? 'bg-white text-black shadow-md'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <QrCode className="w-3.5 h-3.5" />
-                <span>QR Code (Scan)</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Method Content */}
+          {/* Pairing Code Content */}
           {selectedMethod === 'pairing_code' ? (
             <div className="p-5 rounded-xl bg-zinc-950 border border-white/5 space-y-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <span className="text-[10px] uppercase tracking-wider text-slate-500 font-mono">
-                    Kode Tautan (180s)
-                  </span>
-                  <div className="text-2xl sm:text-3xl font-mono font-black tracking-widest text-yellow-400 select-all">
-                    {pairingCode || 'MEMBUAT...'}
+              {!isWaitingForVerification && !pairingCode ? (
+                <div className="space-y-4 text-center py-4">
+                  <div className="w-12 h-12 rounded-full bg-yellow-400/10 border border-yellow-400/20 mx-auto flex items-center justify-center text-yellow-400">
+                    <KeyRound className="w-6 h-6" />
                   </div>
-                </div>
+                  <div>
+                    <h4 className="text-sm font-semibold text-white">Minta Kode Pairing Resmi</h4>
+                    <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                      Server akan melakukan handshake langsung ke server WhatsApp dan meminta 8-digit kode tautan resmi untuk nomor Anda.
+                    </p>
+                  </div>
 
-                <div className="flex items-center gap-1.5">
                   <button
-                    onClick={handleCopyCode}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-white text-xs font-medium border border-white/10 transition-all cursor-pointer"
+                    onClick={handleRequestPairing}
+                    disabled={isRequestingPairing}
+                    className="w-full sm:w-auto px-6 py-3 rounded-full bg-white text-black font-semibold text-xs hover:bg-slate-200 transition-all cursor-pointer disabled:opacity-50 inline-flex items-center justify-center gap-2 shadow-lg"
                   >
-                    {copied ? (
+                    {isRequestingPairing ? (
                       <>
-                        <Check className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Tersalin</span>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        <span>Menghubungi Server WhatsApp...</span>
                       </>
                     ) : (
                       <>
-                        <Copy className="w-3.5 h-3.5" />
-                        <span>Salin</span>
+                        <span>Minta Kode Pairing Sekarang</span>
+                        <ExternalLink className="w-3.5 h-3.5" />
                       </>
                     )}
                   </button>
-
-                  <button
-                    onClick={generateNewPairingCode}
-                    className="p-2 rounded-lg bg-zinc-900 hover:bg-zinc-800 text-slate-300 hover:text-white border border-white/10 transition-all cursor-pointer"
-                    title="Perbarui Kode"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" />
-                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-zinc-900 border border-yellow-400/30">
+                    <div>
+                      <span className="text-[10px] uppercase tracking-wider text-yellow-400/90 font-mono font-bold block">
+                        Kode Tautan Resmi WhatsApp (Aktif):
+                      </span>
+                      <div className="text-3xl sm:text-4xl font-mono font-black tracking-widest text-white select-all mt-0.5">
+                        {pairingCode || 'MEMPROSES...'}
+                      </div>
+                    </div>
 
-              <p className="text-[11px] text-slate-400 leading-relaxed font-sans">
-                Buka WhatsApp &gt; Perangkat Tertaut &gt; Tautkan Perangkat &gt; &quot;Tautkan dengan nomor telepon saja&quot; &gt; Masukkan kode 8 digit.
-              </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleCopyCode}
+                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-medium border border-white/10 transition-all cursor-pointer"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Tersalin</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5" />
+                            <span>Salin Kode</span>
+                          </>
+                        )}
+                      </button>
 
-              <button
-                onClick={handleVerifyConnection}
-                disabled={isPairingProcessing}
-                className="w-full py-3 px-4 rounded-full bg-white text-black font-semibold text-xs sm:text-sm hover:bg-slate-100 transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-              >
-                {isPairingProcessing ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin text-black" />
-                    <span>Memverifikasi Koneksi...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Konfirmasi &amp; Hubungkan Perangkat</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+                      <button
+                        onClick={handleRequestPairing}
+                        disabled={isRequestingPairing}
+                        className="p-2.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-slate-300 hover:text-white border border-white/10 transition-all cursor-pointer"
+                        title="Minta Kode Baru"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRequestingPairing ? 'animate-spin' : ''}`} />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Real Instructions */}
+                  <div className="p-4 rounded-xl bg-zinc-900/60 border border-white/5 space-y-2 text-xs">
+                    <div className="font-semibold text-white flex items-center gap-1.5 font-mono text-[11px] uppercase text-yellow-400">
+                      <Smartphone className="w-3.5 h-3.5" />
+                      <span>Langkah Memasukkan Kode di HP:</span>
+                    </div>
+                    <ol className="list-decimal list-inside space-y-1.5 text-slate-300 leading-relaxed font-sans">
+                      <li>Buka aplikasi WhatsApp di HP nomor Anda.</li>
+                      <li>
+                        Buka <strong>Pengaturan</strong> &gt; <strong>Perangkat Tertaut</strong> &gt; <strong>Tautkan Perangkat</strong>.
+                      </li>
+                      <li>
+                        Klik tulisan biru di bagian bawah: <strong>&quot;Tautkan dengan nomor telepon saja&quot;</strong>.
+                      </li>
+                      <li>
+                        Masukkan kode 8 digit di atas: <span className="font-mono text-yellow-300 font-bold">{pairingCode}</span>.
+                      </li>
+                    </ol>
+                  </div>
+
+                  <div className="flex flex-col sm:flex-row items-center gap-3 pt-2">
+                    <button
+                      onClick={handleManualCheck}
+                      disabled={isCheckingStatus}
+                      className="w-full sm:flex-1 py-3 px-4 rounded-full bg-white text-black font-semibold text-xs hover:bg-slate-200 transition-all cursor-pointer flex items-center justify-center gap-2 shadow-md"
+                    >
+                      {isCheckingStatus ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                          <span>Mengecek Verifikasi WhatsApp...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Cek Status Verifikasi HP Sekarang</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => {
+                        setIsWaitingForVerification(false);
+                        setPairingCode('');
+                      }}
+                      className="w-full sm:w-auto px-5 py-3 rounded-full bg-zinc-800 hover:bg-zinc-700 text-slate-300 hover:text-white text-xs font-medium transition-all cursor-pointer"
+                    >
+                      Batal / Ganti Nomor
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           ) : (
             <div className="p-5 rounded-xl bg-zinc-950 border border-white/5 flex flex-col items-center space-y-4">
@@ -383,33 +483,36 @@ export function PairingGateway({
                     className="w-48 h-48 rounded-lg block"
                   />
                 ) : (
-                  <div className="w-48 h-48 flex items-center justify-center text-xs text-slate-500">
-                    Membuat QR Code...
+                  <div className="w-48 h-48 flex flex-col items-center justify-center text-center p-3 text-xs text-zinc-600 space-y-2">
+                    <RefreshCw className={`w-5 h-5 text-zinc-400 ${isRequestingPairing ? 'animate-spin' : ''}`} />
+                    <span>Klik tombol di bawah untuk membuat QR session resmi</span>
                   </div>
                 )}
               </div>
 
-              <p className="text-center text-[11px] text-slate-400 font-mono">
-                Refresh otomatis: {qrCountdown}s · Arahkan kamera WhatsApp
-              </p>
+              <div className="w-full max-w-sm space-y-3">
+                <button
+                  onClick={handleRequestPairing}
+                  disabled={isRequestingPairing}
+                  className="w-full py-3 px-4 rounded-full bg-white text-black font-semibold text-xs hover:bg-slate-200 transition-all cursor-pointer flex items-center justify-center gap-2"
+                >
+                  {isRequestingPairing ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Membuat QR Session WhatsApp...</span>
+                    </>
+                  ) : (
+                    <>
+                      <QrCode className="w-3.5 h-3.5" />
+                      <span>Buat / Segarkan QR Code</span>
+                    </>
+                  )}
+                </button>
 
-              <button
-                onClick={handleVerifyConnection}
-                disabled={isPairingProcessing}
-                className="w-full py-3 px-4 rounded-full bg-white text-black font-semibold text-xs sm:text-sm hover:bg-slate-100 transition-all active:scale-95 disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
-              >
-                {isPairingProcessing ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin text-black" />
-                    <span>Menyinkronkan Sesi QR Code...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Konfirmasi QR Telah Dipindai</span>
-                    <ArrowRight className="w-4 h-4" />
-                  </>
-                )}
-              </button>
+                <p className="text-center text-[11px] text-slate-400 leading-relaxed">
+                  Buka WhatsApp &gt; Perangkat Tertaut &gt; Tautkan Perangkat &gt; Arahkan kamera ke QR di atas.
+                </p>
+              </div>
             </div>
           )}
         </div>
