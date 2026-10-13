@@ -1,0 +1,6 @@
+{
+  "name": "FZPEDIA - WA Gateway & Private Bot Platform",
+  "description": "Platform WhatsApp Bot Gateway profesional dengan pairing code, QR code, manajemen bot privat eksklusif, monitoring status real-time, kontrol kecepatan server, dan limit kuota API harian.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
