@@ -183,14 +183,32 @@ export function BotManagement({
         { sender: 'Grup WhatsApp', text: msg, role: 'user' },
       ]);
 
+      const matchedCmd = commands.find(
+        (c) => c.enabled && (c.trigger.toLowerCase() === msg.toLowerCase() || msg.startsWith(c.trigger))
+      );
+
       setTimeout(() => {
-        if (privacyConfig.ignoreGroupChats || (isMention && privacyConfig.ignoreGroupMentions)) {
+        if (matchedCmd) {
+          setSimChatLog((prev) => [
+            ...prev,
+            { sender: 'FZPEDIA Bot (Grup)', text: matchedCmd.response, role: 'bot' },
+          ]);
+
+          onLogActivity({
+            senderNumber: 'Owner di Grup',
+            senderType: 'owner',
+            chatType: 'group',
+            messagePreview: msg,
+            actionTaken: 'EXECUTED',
+            latencyMs: realLatency || 12,
+          });
+        } else if (privacyConfig.ignoreGroupChats || (isMention && privacyConfig.ignoreGroupMentions)) {
           setSimChatLog((prev) => [
             ...prev,
             {
               sender: 'Filter Privat FZPEDIA',
-              text: `⛔ [OBROLAN GRUP DIABAIKAN]: ${
-                isMention ? 'Sebutan/tag di grup diabaikan.' : 'Pesan grup diabaikan.'
+              text: `⛔ [OBROLAN GRUP NON-PERINTAH]: ${
+                isMention ? 'Sebutan santai diabaikan.' : 'Obrolan santai diabaikan agar tidak spam di grup.'
               }`,
               role: 'system',
             },
@@ -204,6 +222,15 @@ export function BotManagement({
             actionTaken: isMention ? 'DROPPED_MENTION' : 'DROPPED_GROUP',
             latencyMs: 2,
           });
+        } else {
+          setSimChatLog((prev) => [
+            ...prev,
+            {
+              sender: 'FZPEDIA Bot (Grup)',
+              text: `🤖 Bot aktif di grup. Ketik *!ping* atau *!menu* untuk menjalankan perintah.`,
+              role: 'bot',
+            },
+          ]);
         }
       }, 250);
     }
@@ -213,11 +240,11 @@ export function BotManagement({
 
   return (
     <PageStage
-      badgeTag="PRIVAT"
+      badgeTag="PRIVAT & GRUP"
       badgeTagColor="bg-yellow-400 text-black"
-      badgeText="Proteksi Mutlak Nomor Owner"
+      badgeText="Proteksi Mutlak & Dukungan Grup"
       title="Manajemen Bot &amp; Proteksi Privat"
-      subtitle="Bot hanya mematuhi nomor owner sendiri, mengabaikan chat pihak lain, sebutan grup, dan obrolan grup."
+      subtitle="Bot mematuhi perintah nomor owner di chat pribadi maupun di dalam grup WhatsApp (grup solo/komunitas)."
     >
       <div className="space-y-6 text-left">
         {/* Strict Privacy Toggles */}
@@ -225,7 +252,7 @@ export function BotManagement({
           <div className="flex items-center justify-between pb-3 border-b border-white/5">
             <div>
               <h3 className="text-xs font-bold uppercase tracking-wider text-white font-mono">
-                Aturan Proteksi
+                Aturan Proteksi &amp; Respon
               </h3>
               <p className="text-[11px] text-slate-400">
                 Nomor Terdaftar: <span className="text-yellow-400 font-mono">{ownerNumber || 'Belum ditautkan'}</span>
@@ -250,14 +277,14 @@ export function BotManagement({
               },
               {
                 key: 'ignoreGroupMentions',
-                label: 'Abaikan Sebutan / Tag Grup',
-                desc: 'Abaikan jika ada yang menandai (@bot) di dalam grup WhatsApp.',
+                label: 'Abaikan Sebutan / Tag Santai Grup',
+                desc: 'Abaikan jika ada yang sekadar menandai (@bot) di dalam obrolan biasa.',
                 val: privacyConfig.ignoreGroupMentions,
               },
               {
                 key: 'ignoreGroupChats',
-                label: 'Abaikan Seluruh Obrolan Grup',
-                desc: 'Mencegah bot membaca dan merespon obrolan grup WhatsApp.',
+                label: 'Abaikan Obrolan Santai di Grup',
+                desc: 'Mencegah spam obrolan biasa, bot hanya merespon perintah resmi (!ping, !status, !menu, dll).',
                 val: privacyConfig.ignoreGroupChats,
               },
             ].map((item) => (

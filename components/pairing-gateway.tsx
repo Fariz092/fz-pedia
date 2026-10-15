@@ -73,6 +73,7 @@ export function PairingGateway({
       if (data.connectionState === 'connected') {
         onUpdateBot({
           connectionState: 'connected',
+          hasSavedSession: true,
           phoneNumber: data.phoneNumber,
           ownerNumber: data.ownerNumber,
           deviceName: data.deviceName,
@@ -83,6 +84,10 @@ export function PairingGateway({
         setIsWaitingForVerification(false);
         setErrorMessage('');
       } else if (data.connectionState === 'connecting') {
+        onUpdateBot({
+          hasSavedSession: Boolean(data.hasSavedSession),
+          phoneNumber: data.phoneNumber || bot.phoneNumber,
+        });
         if (data.pairingCode && !pairingCode) {
           setPairingCode(data.pairingCode);
         }
@@ -90,14 +95,16 @@ export function PairingGateway({
           renderQrCode(data.qrCodeRaw);
         }
       } else if (data.connectionState === 'disconnected') {
-        if (bot.connectionState === 'connected') {
-          onUpdateBot({ connectionState: 'disconnected' });
-        }
+        onUpdateBot({
+          hasSavedSession: Boolean(data.hasSavedSession),
+          phoneNumber: data.phoneNumber || bot.phoneNumber,
+          connectionState: bot.connectionState === 'connected' ? 'disconnected' : bot.connectionState,
+        });
       }
     } catch {
       // ignore network glitch
     }
-  }, [bot.connectionState, onUpdateBot, pairingCode, realLatency, renderQrCode]);
+  }, [bot.connectionState, bot.phoneNumber, onUpdateBot, pairingCode, realLatency, renderQrCode]);
 
   // Periodic polling when waiting for verification
   useEffect(() => {
@@ -282,6 +289,51 @@ export function PairingGateway({
         </div>
       ) : (
         <div className="p-6 sm:p-7 rounded-2xl bg-zinc-900/80 border border-white/10 space-y-6 backdrop-blur-xl text-left shadow-2xl">
+          {/* Saved Multi-Device Session Banner */}
+          {bot.hasSavedSession && (
+            <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-lg bg-emerald-500/15 text-emerald-400 mt-0.5">
+                  <KeyRound className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-xs font-semibold text-emerald-300 font-mono flex items-center gap-2">
+                    <span>Sesi WhatsApp Tersimpan Permanen</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  </div>
+                  <p className="text-[11px] text-slate-300 mt-0.5">
+                    Nomor <strong className="text-white font-mono">{bot.phoneNumber || 'terdaftar'}</strong> tersimpan aman di disk server. Anda tidak perlu scan atau meminta kode pairing lagi!
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setStatusFeedback('Sedang memulihkan koneksi permanen...');
+                    try {
+                      await fetch('/api/wa/pair', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ phoneNumber: bot.phoneNumber || '', method: 'qrcode' }),
+                      });
+                    } catch {}
+                  }}
+                  className="px-3.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold transition-all cursor-pointer whitespace-nowrap shadow-sm"
+                >
+                  Hubungkan Otomatis
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDisconnect}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-red-300 text-xs transition-all cursor-pointer whitespace-nowrap"
+                >
+                  Ganti Akun
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Method Segment */}
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950 rounded-xl border border-white/5">

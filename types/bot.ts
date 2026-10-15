@@ -20,6 +20,7 @@ export interface BotInstance {
   uptimeSeconds: number;
   lastConnectedAt: string;
   createdAt: string;
+  hasSavedSession?: boolean;
 }
 
 export interface PrivacyConfig {

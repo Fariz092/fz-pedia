@@ -45,8 +45,8 @@ export default function Home() {
   const [privacyConfig, setPrivacyConfig] = useState<PrivacyConfig>({
     strictPrivateMode: true,
     ignoreStrangers: true,
-    ignoreGroupMentions: true,
-    ignoreGroupChats: true,
+    ignoreGroupMentions: false,
+    ignoreGroupChats: false,
     autoReadMessages: true,
     showTypingStatus: true,
     customPrefix: '!',
@@ -93,18 +93,26 @@ export default function Home() {
             setBot((prev) => ({
               ...prev,
               connectionState: 'connected',
+              hasSavedSession: true,
               phoneNumber: waData.phoneNumber || prev.phoneNumber,
               ownerNumber: waData.ownerNumber || prev.ownerNumber,
               waVersion: waData.waVersion || prev.waVersion,
               deviceName: waData.deviceName || prev.deviceName,
               lastConnectedAt: waData.lastConnectedAt || prev.lastConnectedAt,
             }));
+          } else if (waData.connectionState === 'connecting') {
+            setBot((prev) => ({
+              ...prev,
+              connectionState: 'connecting',
+              hasSavedSession: waData.hasSavedSession ?? prev.hasSavedSession,
+              phoneNumber: waData.phoneNumber || prev.phoneNumber,
+            }));
           } else if (waData.connectionState === 'disconnected') {
             setBot((prev) => {
               if (prev.connectionState === 'connected') {
-                return { ...prev, connectionState: 'disconnected' };
+                return { ...prev, connectionState: 'disconnected', hasSavedSession: waData.hasSavedSession ?? prev.hasSavedSession };
               }
-              return prev;
+              return { ...prev, hasSavedSession: waData.hasSavedSession ?? prev.hasSavedSession };
             });
           }
 
@@ -126,20 +134,61 @@ export default function Home() {
     };
   }, []);
 
+  // Hydrate configurations from localStorage
+  useEffect(() => {
+    try {
+      const savedPrivacy = localStorage.getItem('fzpedia_privacy_config');
+      if (savedPrivacy) {
+        const parsed = JSON.parse(savedPrivacy);
+        queueMicrotask(() => setPrivacyConfig(parsed));
+      }
+
+      const savedServer = localStorage.getItem('fzpedia_server_config');
+      if (savedServer) {
+        const parsed = JSON.parse(savedServer);
+        queueMicrotask(() => setServerConfig(parsed));
+      }
+
+      const savedNotif = localStorage.getItem('fzpedia_notif_config');
+      if (savedNotif) {
+        const parsed = JSON.parse(savedNotif);
+        queueMicrotask(() => setNotificationSettings(parsed));
+      }
+    } catch {}
+  }, []);
+
   const handleUpdateBot = (updated: Partial<BotInstance>) => {
     setBot((prev) => ({ ...prev, ...updated }));
   };
 
   const handleUpdatePrivacy = (updated: Partial<PrivacyConfig>) => {
-    setPrivacyConfig((prev) => ({ ...prev, ...updated }));
+    setPrivacyConfig((prev) => {
+      const next = { ...prev, ...updated };
+      try {
+        localStorage.setItem('fzpedia_privacy_config', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   const handleUpdateServerConfig = (updated: Partial<ServerConfig>) => {
-    setServerConfig((prev) => ({ ...prev, ...updated }));
+    setServerConfig((prev) => {
+      const next = { ...prev, ...updated };
+      try {
+        localStorage.setItem('fzpedia_server_config', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   const handleUpdateNotificationSettings = (updated: Partial<NotificationSettings>) => {
-    setNotificationSettings((prev) => ({ ...prev, ...updated }));
+    setNotificationSettings((prev) => {
+      const next = { ...prev, ...updated };
+      try {
+        localStorage.setItem('fzpedia_notif_config', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
   };
 
   const handleLogActivity = (log: Omit<ActivityLog, 'id' | 'timestamp'>) => {

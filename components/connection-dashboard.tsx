@@ -55,11 +55,17 @@ export function ConnectionDashboard({
     return () => clearInterval(interval);
   }, [isConnected, testRealPing]);
 
-  const handleDisconnect = () => {
+  const handleDisconnect = async () => {
+    try {
+      await fetch('/api/wa/disconnect', { method: 'POST' });
+    } catch {
+      // fallback
+    }
     onUpdateBot({
       connectionState: 'disconnected',
       phoneNumber: '',
       ownerNumber: '',
+      hasSavedSession: false,
     });
   };
 
@@ -103,11 +109,17 @@ export function ConnectionDashboard({
                   Terhubung &amp; Beroperasi
                 </span>
               </div>
-              <div className="text-xl sm:text-2xl font-mono font-bold text-white mt-1">
-                {bot.phoneNumber}
+              <div className="flex flex-wrap items-center gap-2 mt-1">
+                <span className="text-xl sm:text-2xl font-mono font-bold text-white">
+                  {bot.phoneNumber}
+                </span>
+                <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                  Sesi Multi-Device Permanen (Tersimpan)
+                </span>
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Nomor Owner: <span className="text-white font-mono">{bot.ownerNumber}</span>
+              <p className="text-xs text-slate-400 mt-1">
+                Nomor Owner: <span className="text-white font-mono">{bot.ownerNumber}</span> • Kredensial tersimpan aman di disk server.
               </p>
             </div>
 
