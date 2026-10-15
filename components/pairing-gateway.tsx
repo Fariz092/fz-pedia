@@ -120,17 +120,27 @@ export function PairingGateway({
   };
 
   const handleRequestPairing = async () => {
-    const cleanNum = phoneNumberInput.replace(/\D/g, '');
-    if (!cleanNum || cleanNum.length < 8) {
-      setErrorMessage('Silakan masukkan nomor WhatsApp yang valid (minimal 8 digit).');
-      return;
+    let fullNumber = '';
+
+    if (selectedMethod === 'pairing_code') {
+      let cleanNum = phoneNumberInput.replace(/\D/g, '');
+      if (cleanNum.startsWith('0')) {
+        cleanNum = cleanNum.replace(/^0+/, '');
+      }
+      if (!cleanNum || cleanNum.length < 8) {
+        setErrorMessage('Silakan masukkan nomor WhatsApp yang valid (minimal 8 digit).');
+        return;
+      }
+      const cleanCountry = countryCode.replace(/\D/g, '');
+      fullNumber = `${cleanCountry}${cleanNum}`;
     }
 
-    const cleanCountry = countryCode.replace(/\D/g, '');
-    const fullNumber = `${cleanCountry}${cleanNum}`;
-
     setErrorMessage('');
-    setStatusFeedback('');
+    setStatusFeedback(
+      selectedMethod === 'pairing_code'
+        ? 'Menghubungi server resmi WhatsApp & meminta kode tautan...'
+        : 'Membuat sesi WebSocket dan memuat QR Code resmi WhatsApp...'
+    );
     setIsRequestingPairing(true);
 
     try {
@@ -148,16 +158,26 @@ export function PairingGateway({
       if (data.success) {
         if (data.pairingCode) {
           setPairingCode(data.pairingCode);
+          setIsWaitingForVerification(true);
+          setStatusFeedback('Kode berhasil diminta dari WhatsApp! Masukkan kode ini di HP Anda.');
         }
-        setIsWaitingForVerification(true);
-        setStatusFeedback('Kode berhasil diminta dari WhatsApp! Masukkan kode ini di HP Anda.');
+        if (data.qrCode) {
+          await renderQrCode(data.qrCode);
+          setIsWaitingForVerification(true);
+          setStatusFeedback('QR Code aktif! Silakan scan dari aplikasi WhatsApp di HP Anda.');
+        } else if (selectedMethod === 'qrcode') {
+          setIsWaitingForVerification(true);
+          setStatusFeedback(data.message || 'QR Code sedang disiapkan...');
+        }
         checkStatus();
       } else {
         setErrorMessage(data.message || 'Gagal meminta kode pairing dari WhatsApp.');
+        setStatusFeedback('');
       }
     } catch (err: unknown) {
       const error = err as Error;
       setErrorMessage(error?.message || 'Gagal terhubung ke server internal Gateway.');
+      setStatusFeedback('');
     } finally {
       setIsRequestingPairing(false);
     }
@@ -301,50 +321,67 @@ export function PairingGateway({
             </div>
           </div>
 
-          {/* Phone Number Input */}
-          <div className="space-y-2">
-            <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider font-mono">
-              Nomor WhatsApp HP Anda (Tanpa Angka 0 di Depan):
-            </label>
-            <div className="flex items-stretch gap-2">
-              <select
-                value={countryCode}
-                onChange={(e) => setCountryCode(e.target.value)}
-                className="w-28 px-3 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-white text-xs font-mono focus:outline-none focus:border-yellow-400 cursor-pointer"
-              >
-                <option value="+62">🇮🇩 +62</option>
-                <option value="+60">🇲🇾 +60</option>
-                <option value="+65">🇸🇬 +65</option>
-                <option value="+1">🇺🇸 +1</option>
-              </select>
+          {/* Phone Number Input (Only needed for Pairing Code) */}
+          {selectedMethod === 'pairing_code' ? (
+            <div className="space-y-2">
+              <label className="text-[11px] font-semibold text-slate-300 block uppercase tracking-wider font-mono">
+                Nomor WhatsApp HP Anda:
+              </label>
+              <div className="flex items-stretch gap-2">
+                <select
+                  value={countryCode}
+                  onChange={(e) => setCountryCode(e.target.value)}
+                  className="w-28 px-3 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-white text-xs font-mono focus:outline-none focus:border-yellow-400 cursor-pointer"
+                >
+                  <option value="+62">🇮🇩 +62</option>
+                  <option value="+60">🇲🇾 +60</option>
+                  <option value="+65">🇸🇬 +65</option>
+                  <option value="+1">🇺🇸 +1</option>
+                </select>
 
-              <input
-                type="tel"
-                value={phoneNumberInput}
-                onChange={(e) => {
-                  setPhoneNumberInput(e.target.value);
-                  setErrorMessage('');
-                  setIsWaitingForVerification(false);
-                }}
-                placeholder="Contoh: 81234567890"
-                className="flex-1 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-white font-mono text-sm placeholder:text-zinc-600 focus:outline-none focus:border-yellow-400"
-              />
+                <input
+                  type="tel"
+                  value={phoneNumberInput}
+                  onChange={(e) => {
+                    setPhoneNumberInput(e.target.value);
+                    setErrorMessage('');
+                    setIsWaitingForVerification(false);
+                  }}
+                  placeholder="Contoh: 08123456789 atau 8123456789"
+                  className="flex-1 px-4 py-2.5 rounded-xl bg-zinc-950 border border-white/10 text-white font-mono text-sm placeholder:text-zinc-600 focus:outline-none focus:border-yellow-400"
+                />
+              </div>
+              <p className="text-[11px] text-zinc-500 font-mono">
+                Bisa diawali 08... atau 8... (sistem otomatis menstandarkan nomor ke format E.164).
+              </p>
             </div>
-
-            {errorMessage && (
-              <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400 flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{errorMessage}</span>
+          ) : (
+            <div className="p-3.5 rounded-xl bg-zinc-950/80 border border-white/5 text-xs text-slate-300 flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-yellow-400/10 flex items-center justify-center text-yellow-400 shrink-0">
+                <QrCode className="w-4 h-4" />
               </div>
-            )}
-
-            {statusFeedback && (
-              <div className="p-3 rounded-lg bg-yellow-400/10 border border-yellow-400/20 text-xs text-yellow-300 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 shrink-0 text-yellow-400" />
-                <span>{statusFeedback}</span>
+              <div>
+                <span className="font-semibold text-white block">Metode QR Code Instan</span>
+                <span className="text-slate-400 text-[11px]">
+                  Tidak memerlukan input nomor HP. Cukup klik tombol di bawah lalu scan dengan kamera WhatsApp di HP Anda.
+                </span>
               </div>
-            )}
-          </div>
+            </div>
+          )}
+
+          {errorMessage && (
+            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
+
+          {statusFeedback && (
+            <div className="p-3 rounded-lg bg-yellow-400/10 border border-yellow-400/20 text-xs text-yellow-300 flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 shrink-0 text-yellow-400" />
+              <span>{statusFeedback}</span>
+            </div>
+          )}
 
           {/* Pairing Code Content */}
           {selectedMethod === 'pairing_code' ? (

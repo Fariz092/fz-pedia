@@ -3,13 +3,13 @@ import Link from 'next/link';
 export default function NotFound() {
   return (
     <div className="min-h-screen bg-[#07070a] text-white flex flex-col items-center justify-center p-4 text-center">
-      <h2 className="text-2xl font-bold mb-2">404 - Halaman Tidak Ditemukan</h2>
-      <p className="text-slate-400 text-sm mb-4">Halaman yang Anda cari tidak tersedia.</p>
+      <h2 className="text-3xl font-bold font-mono text-yellow-400 mb-2">404 - Halaman Tidak Ditemukan</h2>
+      <p className="text-sm text-slate-400 mb-6">Halaman yang Anda tuju tidak tersedia di server FZPEDIA.</p>
       <Link
         href="/"
-        className="px-4 py-2 bg-white text-black font-semibold text-xs rounded-xl hover:bg-slate-200"
+        className="px-5 py-2.5 rounded-full bg-white text-black text-xs font-semibold hover:bg-slate-200 transition-all"
       >
-        Kembali ke Beranda
+        Kembali ke Dashboard
       </Link>
     </div>
   );

@@ -24,57 +24,6 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState<string>('hero');
   const [realLatency, setRealLatency] = useState<number>(14);
 
-  useEffect(() => {
-    let isCancelled = false;
-    const fetchStatusAndPing = async () => {
-      const t0 = performance.now();
-      try {
-        const pingRes = await fetch('/api/server-ping');
-        if (pingRes.ok && !isCancelled) {
-          const ping = Math.max(8, Math.round(performance.now() - t0));
-          setRealLatency(ping);
-        }
-
-        const waRes = await fetch('/api/wa/status');
-        if (waRes.ok && !isCancelled) {
-          const waData = await waRes.json();
-          if (waData.connectionState === 'connected') {
-            setBot((prev) => ({
-              ...prev,
-              connectionState: 'connected',
-              phoneNumber: waData.phoneNumber || prev.phoneNumber,
-              ownerNumber: waData.ownerNumber || prev.ownerNumber,
-              waVersion: waData.waVersion || prev.waVersion,
-              deviceName: waData.deviceName || prev.deviceName,
-              lastConnectedAt: waData.lastConnectedAt || prev.lastConnectedAt,
-            }));
-          } else if (waData.connectionState === 'disconnected') {
-            setBot((prev) => {
-              if (prev.connectionState === 'connected') {
-                return { ...prev, connectionState: 'disconnected' };
-              }
-              return prev;
-            });
-          }
-
-          if (Array.isArray(waData.activityLogs) && waData.activityLogs.length > 0) {
-            setActivityLogs(waData.activityLogs);
-          }
-        }
-      } catch {
-        // fallback
-      }
-    };
-
-    const initialTimer = setTimeout(fetchStatusAndPing, 100);
-    const interval = setInterval(fetchStatusAndPing, 3500);
-    return () => {
-      isCancelled = true;
-      clearTimeout(initialTimer);
-      clearInterval(interval);
-    };
-  }, []);
-
   const [bot, setBot] = useState<BotInstance>({
     id: 'bot-instance-live',
     name: 'FZPEDIA Gateway Bot',
@@ -125,6 +74,57 @@ export default function Home() {
   });
 
   const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+
+  useEffect(() => {
+    let isCancelled = false;
+    const fetchStatusAndPing = async () => {
+      const t0 = performance.now();
+      try {
+        const pingRes = await fetch('/api/server-ping');
+        if (pingRes.ok && !isCancelled) {
+          const ping = Math.max(8, Math.round(performance.now() - t0));
+          setRealLatency(ping);
+        }
+
+        const waRes = await fetch('/api/wa/status');
+        if (waRes.ok && !isCancelled) {
+          const waData = await waRes.json();
+          if (waData.connectionState === 'connected') {
+            setBot((prev) => ({
+              ...prev,
+              connectionState: 'connected',
+              phoneNumber: waData.phoneNumber || prev.phoneNumber,
+              ownerNumber: waData.ownerNumber || prev.ownerNumber,
+              waVersion: waData.waVersion || prev.waVersion,
+              deviceName: waData.deviceName || prev.deviceName,
+              lastConnectedAt: waData.lastConnectedAt || prev.lastConnectedAt,
+            }));
+          } else if (waData.connectionState === 'disconnected') {
+            setBot((prev) => {
+              if (prev.connectionState === 'connected') {
+                return { ...prev, connectionState: 'disconnected' };
+              }
+              return prev;
+            });
+          }
+
+          if (Array.isArray(waData.activityLogs) && waData.activityLogs.length > 0) {
+            setActivityLogs(waData.activityLogs);
+          }
+        }
+      } catch {
+        // fallback
+      }
+    };
+
+    const initialTimer = setTimeout(fetchStatusAndPing, 100);
+    const interval = setInterval(fetchStatusAndPing, 3500);
+    return () => {
+      isCancelled = true;
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
+  }, []);
 
   const handleUpdateBot = (updated: Partial<BotInstance>) => {
     setBot((prev) => ({ ...prev, ...updated }));

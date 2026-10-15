@@ -1,9 +1,9 @@
 import makeWASocket, {
   DisconnectReason,
-  useMultiFileAuthState,
+  useMultiFileAuthState as initMultiFileAuthState,
   fetchLatestBaileysVersion,
   Browsers,
-  WASocket,
+  type WASocket,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { Boom } from '@hapi/boom';
@@ -79,11 +79,22 @@ class WhatsAppManager {
   public async startSession(
     phoneNumberInput: string,
     method: 'pairing_code' | 'qrcode'
-  ): Promise<{ success: boolean; pairingCode?: string; message: string }> {
-    const cleanNum = phoneNumberInput.replace(/\D/g, '');
+  ): Promise<{ success: boolean; pairingCode?: string; qrCode?: string; message: string }> {
+    // Robust E.164 normalization for Indonesia and international numbers
+    let cleanNum = phoneNumberInput.replace(/\D/g, '');
+    if (cleanNum.startsWith('0')) {
+      cleanNum = '62' + cleanNum.replace(/^0+/, '');
+    } else if (cleanNum.startsWith('8') && cleanNum.length >= 9 && cleanNum.length <= 13) {
+      cleanNum = '62' + cleanNum;
+    } else if (cleanNum.startsWith('620')) {
+      cleanNum = '62' + cleanNum.slice(3);
+    }
 
-    if (method === 'pairing_code' && (!cleanNum || cleanNum.length < 8)) {
-      return { success: false, message: 'Nomor WhatsApp tidak valid (minimal 8 digit).' };
+    if (method === 'pairing_code' && (!cleanNum || cleanNum.length < 9)) {
+      return {
+        success: false,
+        message: 'Nomor WhatsApp tidak valid (minimal 9 digit, contoh: 08123456789 atau 628123456789).',
+      };
     }
 
     if (this.sock && this.state.connectionState === 'connected') {
@@ -93,12 +104,18 @@ class WhatsAppManager {
       };
     }
 
-    if (this.isInitializing) {
-      return {
-        success: true,
-        pairingCode: this.state.pairingCode,
-        message: 'Proses handshake sedang berlangsung. Silakan tunggu.',
-      };
+    // Reset previous unauthenticated session files to avoid stale creds conflicts
+    if (this.state.connectionState !== 'connected') {
+      if (this.sock) {
+        try {
+          this.sock.ev.removeAllListeners('connection.update');
+          this.sock.ev.removeAllListeners('creds.update');
+          this.sock.ev.removeAllListeners('messages.upsert');
+          this.sock.end(undefined);
+        } catch {}
+        this.sock = null;
+      }
+      this.clearSessionDir();
     }
 
     this.isInitializing = true;
@@ -109,27 +126,20 @@ class WhatsAppManager {
     this.state.qrCodeRaw = '';
 
     try {
-      const { state: authState, saveCreds } = await useMultiFileAuthState(this.sessionDir);
+      const { state: authState, saveCreds } = await initMultiFileAuthState(this.sessionDir);
       const { version } = await fetchLatestBaileysVersion().catch(() => ({
-        version: [2, 3000, 1015901307] as [number, number, number],
+        version: [2, 3000, 1043857760] as [number, number, number],
       }));
 
       this.state.waVersion = version.join('.');
-
-      // Close previous socket if exists
-      if (this.sock) {
-        try {
-          this.sock.end(undefined);
-        } catch {}
-        this.sock = null;
-      }
 
       const sock = makeWASocket({
         version,
         auth: authState,
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
-        browser: Browsers.macOS('Desktop'),
+        // Ubuntu Chrome signature is required by WhatsApp's modern pairing code API
+        browser: Browsers.ubuntu('Chrome'),
         syncFullHistory: false,
         markOnlineOnConnect: true,
         connectTimeoutMs: 60000,
@@ -144,7 +154,7 @@ class WhatsAppManager {
       sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        if (qr && method === 'qrcode') {
+        if (qr) {
           this.state.qrCodeRaw = qr;
         }
 
@@ -157,7 +167,7 @@ class WhatsAppManager {
 
           const userJid = sock.user?.id || '';
           const actualPhone = userJid.split(':')[0].split('@')[0];
-          this.state.phoneNumber = actualPhone ? `+${actualPhone}` : phoneNumberInput;
+          this.state.phoneNumber = actualPhone ? `+${actualPhone}` : (cleanNum ? `+${cleanNum}` : '');
           this.state.ownerNumber = this.state.phoneNumber;
 
           this.addLog({
@@ -186,6 +196,11 @@ class WhatsAppManager {
           if (statusCode === DisconnectReason.loggedOut) {
             this.state.connectionState = 'disconnected';
             this.clearSessionDir();
+          } else if (shouldReconnect && this.state.connectionState === 'connected') {
+            this.state.connectionState = 'connecting';
+            setTimeout(() => {
+              this.startSession(this.state.phoneNumber, this.state.pairingMethod);
+            }, 3000);
           } else {
             this.state.connectionState = 'disconnected';
           }
@@ -259,37 +274,101 @@ class WhatsAppManager {
         }
       });
 
-      // Request Pairing Code from WhatsApp Official Server
-      if (method === 'pairing_code' && !sock.authState.creds.registered) {
-        // Allow socket handshake to initialize with WA servers
-        await new Promise((resolve) => setTimeout(resolve, 3500));
+      // Wait for socket registration handshake to initialize and settle
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const timer = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        }, 6000);
 
-        try {
-          const rawCode = await sock.requestPairingCode(cleanNum);
-          // Format pairing code with standard hyphen e.g. ABCD-1234
-          const formattedCode = rawCode ? `${rawCode.slice(0, 4)}-${rawCode.slice(4)}` : rawCode;
-          this.state.pairingCode = formattedCode;
-          this.isInitializing = false;
+        const onUpdate = (u: { qr?: string; connection?: string }) => {
+          if (u.qr || u.connection === 'open') {
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              // Allow WhatsApp companion registration frame to settle before sending link_code node
+              setTimeout(resolve, 1500);
+            }
+          }
+        };
+        sock.ev.on('connection.update', onUpdate);
+      });
+
+      // Process QR Code method
+      if (method === 'qrcode') {
+        let qrCode = this.state.qrCodeRaw;
+        if (!qrCode) {
+          qrCode = await new Promise<string>((resolve) => {
+            const timer = setTimeout(() => resolve(''), 8000);
+            const onQr = (u: { qr?: string }) => {
+              if (u.qr) {
+                clearTimeout(timer);
+                resolve(u.qr);
+              }
+            };
+            sock.ev.on('connection.update', onQr);
+          });
+        }
+
+        this.isInitializing = false;
+        if (qrCode) {
+          this.state.qrCodeRaw = qrCode;
           return {
             success: true,
-            pairingCode: formattedCode,
-            message: 'Kode pairing resmi berhasil didapatkan dari server WhatsApp.',
+            qrCode,
+            message: 'QR Code WhatsApp resmi berhasil didapatkan. Silakan scan di aplikasi WhatsApp HP Anda.',
           };
-        } catch (pairErr: unknown) {
-          const err = pairErr as Error;
-          this.state.lastError = err?.message || 'Gagal meminta kode pairing ke WhatsApp.';
-          this.isInitializing = false;
+        } else {
           return {
-            success: false,
-            message: `Gagal mendapatkan kode dari WhatsApp: ${this.state.lastError}`,
+            success: true,
+            message: 'Inisialisasi handshake berhasil. QR Code sedang dimuat dari server WhatsApp...',
           };
         }
+      }
+
+      // Process Pairing Code method
+      if (method === 'pairing_code' && !sock.authState.creds.registered) {
+        let attempts = 0;
+        let lastErr: Error | null = null;
+        let formattedCode = '';
+
+        while (attempts < 3 && !formattedCode) {
+          attempts++;
+          try {
+            const rawCode = await sock.requestPairingCode(cleanNum);
+            formattedCode = rawCode ? `${rawCode.slice(0, 4)}-${rawCode.slice(4)}` : rawCode;
+            this.state.pairingCode = formattedCode;
+            this.state.phoneNumber = `+${cleanNum}`;
+            this.state.ownerNumber = `+${cleanNum}`;
+            this.isInitializing = false;
+            return {
+              success: true,
+              pairingCode: formattedCode,
+              message: 'Kode pairing resmi berhasil didapatkan dari server WhatsApp.',
+            };
+          } catch (pairErr: unknown) {
+            lastErr = pairErr as Error;
+            if (attempts < 3) {
+              await new Promise((r) => setTimeout(r, 1500));
+            }
+          }
+        }
+
+        this.state.lastError = lastErr?.message || 'Gagal meminta kode pairing ke WhatsApp.';
+        this.isInitializing = false;
+        return {
+          success: false,
+          message: `Gagal mendapatkan kode dari WhatsApp: ${this.state.lastError}`,
+        };
       }
 
       this.isInitializing = false;
       return {
         success: true,
-        message: 'Inisialisasi berhasil. Silakan scan QR Code yang muncul.',
+        message: 'Inisialisasi selesai.',
       };
     } catch (err: unknown) {
       const error = err as Error;
